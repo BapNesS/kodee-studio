@@ -1,0 +1,6 @@
+{
+  "name": "Kodee Studio",
+  "description": "100% client-side interactive studio to pose the Kodee mascot in procedural SVG, customize expressions, colors, accessories, and speech bubbles, and export HD PNG, SVG, or JSON.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
