@@ -273,8 +273,8 @@ export const GLOBAL_POSE_PRESETS: GlobalPosePreset[] = [
     body: { x: 250, y: 264, rotation: 0 },
     face: { expression: 'shocked', eyeOffset: { x: 0, y: 0 } },
     limbs: {
-      leftArm: { ctrl: { x: 142, y: 294 }, end: { x: 174, y: 256 } },
-      rightArm: { ctrl: { x: 358, y: 294 }, end: { x: 326, y: 256 } },
+      leftArm: { ctrl: { x: 146, y: 294 }, end: { x: 196, y: 264 }, inFront: true },
+      rightArm: { ctrl: { x: 354, y: 294 }, end: { x: 304, y: 264 }, inFront: true },
       leftLeg: { ctrl: { x: 236, y: 364 }, end: { x: 214, y: 414 } },
       rightLeg: { ctrl: { x: 264, y: 364 }, end: { x: 286, y: 414 } },
     },
@@ -330,6 +330,7 @@ export function buildLimbFromPreset(
   side: 'left' | 'right',
   body: Pick<KodeeState['body'], 'x' | 'y'>,
   existingAnchor?: Point,
+  existingInFront?: boolean,
 ): LimbCurve {
   const dir = side === 'left' ? -1 : 1;
   return {
@@ -342,6 +343,7 @@ export function buildLimbFromPreset(
       x: clampCoord(body.x + preset.endOffset.x * dir),
       y: clampCoord(body.y + preset.endOffset.y),
     },
+    ...(existingInFront ? { inFront: true } : {}),
   };
 }
 

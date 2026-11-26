@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle, CheckCircle2, Download, Info } from 'lucide-react';
 import { AboutModal } from './components/AboutModal';
 import { CanvasStage } from './components/CanvasStage';
+import { CopyImageModal } from './components/CopyImageModal';
 import { Sidebar, type SidebarTabId } from './components/Sidebar';
 import {
   generateRandomState,
@@ -16,7 +17,8 @@ import {
   downloadKodeeJson,
   downloadKodeePng,
   downloadKodeeSvg,
-  type CopyImageResult,
+  renderSvgToPngBlob,
+  type CopyImageOutcome,
 } from './utils/exportPng';
 
 interface ToastMessage {
@@ -33,6 +35,7 @@ function cloneLimb(limb: LimbCurve): LimbCurve {
     ctrl: { ...limb.ctrl },
     ...(limb.ctrl2 ? { ctrl2: { ...limb.ctrl2 } } : {}),
     end: { ...limb.end },
+    ...(limb.inFront ? { inFront: true } : {}),
   };
 }
 
@@ -67,10 +70,12 @@ export default function App() {
   const [exportSize, setExportSize] = useState<ExportSize>(1024);
   const [exportTransparent, setExportTransparent] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [copyModal, setCopyModal] = useState<{ blob: Blob; filename: string } | null>(null);
   const [toast, setToast] = useState<ToastMessage | null>(null);
 
   const svgRef = useRef<SVGSVGElement | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const cachedPngRef = useRef<{ key: string; blob: Blob } | null>(null);
 
   const showToast = useCallback((kind: 'success' | 'error', text: string) => {
     if (toastTimerRef.current) {
@@ -222,6 +227,29 @@ export default function App() {
 
   const effectiveTransparent = exportTransparent || state.background.color === 'transparent';
 
+  // Keep a fresh pre-rendered PNG Blob warm in memory so Android Share & Clipboard APIs
+  // can fire 100% synchronously inside the tap gesture without losing transient user activation.
+  const pngCacheKey = `${exportSize}|${effectiveTransparent ? '1' : '0'}|${JSON.stringify(state)}`;
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      if (!svgRef.current) return;
+      void renderSvgToPngBlob(svgRef.current, exportSize, effectiveTransparent)
+        .then((blob) => {
+          if (!cancelled) {
+            cachedPngRef.current = { key: pngCacheKey, blob };
+          }
+        })
+        .catch(() => {
+          // Will re-render on demand if needed
+        });
+    }, 260);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [exportSize, effectiveTransparent, pngCacheKey]);
+
   const handleDownloadPng = useCallback(async () => {
     if (!svgRef.current) return;
     try {
@@ -235,25 +263,25 @@ export default function App() {
     }
   }, [effectiveTransparent, exportSize, showToast]);
 
-  const handleCopyPng = useCallback(async (): Promise<CopyImageResult> => {
+  const handleCopyPng = useCallback(async (): Promise<CopyImageOutcome['status']> => {
     if (!svgRef.current) return 'cancelled';
+    const readyBlob =
+      cachedPngRef.current?.key === pngCacheKey ? cachedPngRef.current.blob : null;
     try {
       const outcome = await copyKodeePngToClipboard(
         svgRef.current,
         exportSize,
         effectiveTransparent,
+        readyBlob,
       );
-      if (outcome === 'copied') {
+      if (outcome.status === 'copied') {
         showToast('success', `PNG ${exportSize} × ${exportSize} px copied to clipboard.`);
-      } else if (outcome === 'shared') {
-        showToast('success', 'PNG shared successfully.');
-      } else if (outcome === 'downloaded') {
-        showToast(
-          'success',
-          'Direct image copy is not supported on this browser — PNG downloaded instead.',
-        );
+      } else if (outcome.status === 'shared') {
+        showToast('success', 'PNG ready to share or copy.');
+      } else if (outcome.status === 'modal') {
+        setCopyModal({ blob: outcome.blob, filename: outcome.filename });
       }
-      return outcome;
+      return outcome.status;
     } catch (err) {
       showToast(
         'error',
@@ -263,7 +291,7 @@ export default function App() {
       );
       throw err;
     }
-  }, [effectiveTransparent, exportSize, showToast]);
+  }, [effectiveTransparent, exportSize, pngCacheKey, showToast]);
 
   const handleDownloadSvg = useCallback(() => {
     if (!svgRef.current) return;
@@ -404,6 +432,14 @@ export default function App() {
       </main>
 
       <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
+
+      <CopyImageModal
+        blob={copyModal?.blob ?? null}
+        filename={copyModal?.filename ?? 'kodee-studio.png'}
+        transparentBackground={effectiveTransparent}
+        onClose={() => setCopyModal(null)}
+        onNotify={showToast}
+      />
     </div>
   );
 }

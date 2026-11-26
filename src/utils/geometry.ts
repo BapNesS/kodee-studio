@@ -165,6 +165,7 @@ export function translateRig(state: KodeeState, targetX: number, targetY: number
     ctrl: shift(limb.ctrl),
     ...(limb.ctrl2 ? { ctrl2: shift(limb.ctrl2) } : {}),
     end: shift(limb.end),
+    ...(limb.inFront ? { inFront: true } : {}),
   });
 
   return {

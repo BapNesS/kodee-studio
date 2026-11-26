@@ -53,7 +53,7 @@ import {
   LOCAL_ANCHORS,
   translateRig,
 } from '../utils/geometry';
-import type { CopyImageResult } from '../utils/exportPng';
+import type { CopyImageOutcome } from '../utils/exportPng';
 import { MiniFacePreview, MiniPosePreview } from './MiniPosePreview';
 
 export type SidebarTabId = 'poses' | 'face' | 'accessories' | 'style' | 'bubble' | 'export';
@@ -72,7 +72,7 @@ interface SidebarProps {
   exportTransparent: boolean;
   onExportTransparentChange: (transparent: boolean) => void;
   onDownloadPng: () => Promise<void>;
-  onCopyPng: () => Promise<CopyImageResult>;
+  onCopyPng: () => Promise<CopyImageOutcome['status']>;
   onDownloadSvg: () => void;
   onCopySvg: () => Promise<void>;
   onDownloadJson: () => void;
@@ -716,6 +716,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                   'left',
                                   prev.body,
                                   prev.limbs.leftArm.anchor,
+                                  prev.limbs.leftArm.inFront,
                                 ),
                               }
                             : {}),
@@ -726,6 +727,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                   'right',
                                   prev.body,
                                   prev.limbs.rightArm.anchor,
+                                  prev.limbs.rightArm.inFront,
                                 ),
                               }
                             : {}),
@@ -737,6 +739,54 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     {preset.label}
                   </button>
                 ))}
+              </div>
+
+              {/* Arm foreground layer toggle (pass in front of head/face) */}
+              <div className="space-y-2 pt-1">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-xs text-[#B4B8C9]">In front of head</span>
+                  <span className="text-[11px] text-[#7D8193]">Overlap face</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {(
+                    [
+                      { id: 'leftArm', label: 'Left Arm' },
+                      { id: 'rightArm', label: 'Right Arm' },
+                    ] as const
+                  ).map(({ id, label }) => {
+                    const isFront = Boolean(state.limbs[id].inFront);
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        aria-pressed={isFront}
+                        onClick={() =>
+                          onUpdateState((prev) => ({
+                            ...prev,
+                            limbs: {
+                              ...prev.limbs,
+                              [id]: {
+                                ...prev.limbs[id],
+                                inFront: !prev.limbs[id].inFront,
+                              },
+                            },
+                          }))
+                        }
+                        className={`flex items-center justify-between px-3 min-h-[40px] rounded-xl border text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                          isFront
+                            ? 'bg-[#7F52FF]/20 border-[#7F52FF] text-white'
+                            : 'bg-[#191B23] border-[#252734] text-[#C8CBD9] hover:border-[#3E4257] hover:text-white'
+                        }`}
+                      >
+                        <span>{label}</span>
+                        <span className="inline-flex items-center gap-1 text-[11px]">
+                          <Layers className="w-3 h-3" aria-hidden="true" />
+                          {isFront ? 'Front' : 'Behind'}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
 
@@ -1730,7 +1780,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   onClick={async () => {
                     try {
                       const outcome = await onCopyPng();
-                      if (outcome !== 'cancelled') {
+                      if (outcome === 'copied' || outcome === 'shared') {
                         setCopiedPng(true);
                         setTimeout(() => setCopiedPng(false), 1800);
                       }

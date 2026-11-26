@@ -950,8 +950,11 @@ export const KodeeSvg: React.FC<KodeeSvgProps> = ({
 
   const backLimbs: LimbId[] = [];
   const mainLimbs: LimbId[] = [];
+  const frontLimbs: LimbId[] = [];
   for (const id of LIMB_KEYS) {
-    if (id === 'leftLeg' && state.limbs.leftLeg.end.x > state.limbs.rightLeg.end.x) {
+    if ((id === 'leftArm' || id === 'rightArm') && state.limbs[id].inFront) {
+      frontLimbs.push(id);
+    } else if (id === 'leftLeg' && state.limbs.leftLeg.end.x > state.limbs.rightLeg.end.x) {
       backLimbs.push(id);
     } else {
       mainLimbs.push(id);
@@ -1080,6 +1083,13 @@ export const KodeeSvg: React.FC<KodeeSvgProps> = ({
           />
         </g>
       </g>
+
+      {/* Layer 5.25: Foreground arms passing in front of head/face */}
+      {frontLimbs.length > 0 && (
+        <g id="layer-limbs-front" pointerEvents="none">
+          {frontLimbs.map(renderLimbPath)}
+        </g>
+      )}
 
       {/* Layer 5.5: Front Accessories */}
       <g id="layer-accessories-front">{frontAccessories.map(renderAccessory)}</g>

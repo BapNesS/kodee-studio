@@ -1,8 +1,16 @@
 import type { ExportSize, KodeeState } from '../types/kodee';
 
-export type CopyImageResult = 'copied' | 'shared' | 'downloaded' | 'cancelled';
+export type CopyImageOutcome =
+  | { status: 'copied' }
+  | { status: 'shared' }
+  | { status: 'cancelled' }
+  | { status: 'modal'; blob: Blob; filename: string };
 
-function formatTimestamp(date = new Date()): string {
+export function isAndroidDevice(): boolean {
+  return typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
+}
+
+export function formatTimestamp(date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return [
     date.getFullYear(),
@@ -14,7 +22,7 @@ function formatTimestamp(date = new Date()): string {
   ].join('');
 }
 
-function triggerBlobDownload(blob: Blob, filename: string): void {
+export function triggerBlobDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -27,8 +35,8 @@ function triggerBlobDownload(blob: Blob, filename: string): void {
 }
 
 /**
- * Copies plain text to the clipboard with a mobile/Android-safe execCommand fallback
- * when navigator.clipboard.writeText is unavailable or blocked (e.g. WebViews, older Android browsers).
+ * Copies plain text to the clipboard with an Android/WebView-safe fallback
+ * when navigator.clipboard.writeText is unavailable or blocked.
  */
 async function copyTextWithFallback(text: string): Promise<void> {
   if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
@@ -36,19 +44,18 @@ async function copyTextWithFallback(text: string): Promise<void> {
       await navigator.clipboard.writeText(text);
       return;
     } catch {
-      // Fall through to legacy textarea selection copy
+      // Fall through to selection-based copy
     }
   }
 
   const textarea = document.createElement('textarea');
   textarea.value = text;
-  textarea.setAttribute('readonly', '');
-  textarea.contentEditable = 'true';
+  textarea.inputMode = 'none'; // Prevents Android soft keyboard from flashing open
   textarea.style.position = 'fixed';
   textarea.style.top = '0';
   textarea.style.left = '-9999px';
   textarea.style.opacity = '0';
-  textarea.style.fontSize = '16px'; // Prevents mobile auto-zoom on focus
+  textarea.style.fontSize = '16px';
   document.body.appendChild(textarea);
 
   const activeEl = document.activeElement as HTMLElement | null;
@@ -56,6 +63,7 @@ async function copyTextWithFallback(text: string): Promise<void> {
     textarea.focus({ preventScroll: true });
     textarea.select();
     textarea.setSelectionRange(0, text.length);
+
     const ok = document.execCommand('copy');
     if (!ok) {
       throw new Error('Clipboard copy was rejected by this browser.');
@@ -105,6 +113,27 @@ export function serializeCleanSvg(
   return serializer.serializeToString(clone);
 }
 
+async function loadSvgImage(src: string): Promise<HTMLImageElement> {
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.decoding = 'sync';
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Failed to load SVG vector rendering.'));
+    image.src = src;
+  });
+
+  // Ensure vector rasterization finishes completely before drawImage (prevents blank frames on Android Chrome)
+  if (typeof img.decode === 'function') {
+    try {
+      await img.decode();
+    } catch {
+      // Some engines resolve onload already decoded and reject decode() for SVG data URIs
+    }
+  }
+
+  return img;
+}
+
 /**
  * Rasterizes the live Kodee <svg> node to a crisp PNG Blob without external requests
  * or tainted-canvas issues (strips interactive handles and optional background).
@@ -115,17 +144,19 @@ export async function renderSvgToPngBlob(
   transparentBackground: boolean,
 ): Promise<Blob> {
   const svgString = serializeCleanSvg(svgElement, transparentBackground, size);
-  const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
-  const url = URL.createObjectURL(svgBlob);
+  const dataUri = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgString)}`;
+
+  let img: HTMLImageElement;
+  let objectUrl: string | null = null;
 
   try {
-    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const image = new Image();
-      image.decoding = 'async';
-      image.onload = () => resolve(image);
-      image.onerror = () => reject(new Error('Failed to load SVG vector rendering.'));
-      image.src = url;
-    });
+    try {
+      img = await loadSvgImage(dataUri);
+    } catch {
+      const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+      objectUrl = URL.createObjectURL(svgBlob);
+      img = await loadSvgImage(objectUrl);
+    }
 
     const canvas = document.createElement('canvas');
     canvas.width = size;
@@ -146,9 +177,11 @@ export async function renderSvgToPngBlob(
       throw new Error('Failed to generate PNG file.');
     }
 
-    return pngBlob;
+    return pngBlob.type === 'image/png' ? pngBlob : new Blob([pngBlob], { type: 'image/png' });
   } finally {
-    URL.revokeObjectURL(url);
+    if (objectUrl) {
+      URL.revokeObjectURL(objectUrl);
+    }
   }
 }
 
@@ -163,79 +196,128 @@ export async function downloadKodeePng(
   return filename;
 }
 
-/**
- * Copies the rendered PNG to the clipboard with full Android / mobile compatibility:
- * 1. Invokes navigator.clipboard.write synchronously with a Promise<Blob> inside ClipboardItem
- *    to preserve transient user activation on Android Chrome & Safari.
- * 2. Retries with a resolved Blob for older Chromium engines that reject Promise items.
- * 3. Falls back to the native Android Web Share sheet (navigator.share with PNG file)
- *    when direct binary image clipboard writes are unsupported or blocked.
- * 4. As a last resort, downloads the PNG file directly so the user always gets the image.
- */
-export async function copyKodeePngToClipboard(
-  svgElement: SVGSVGElement,
-  size: ExportSize,
-  transparentBackground: boolean,
-): Promise<CopyImageResult> {
-  // Start rendering immediately while still inside the synchronous user gesture
-  const pngPromise = renderSvgToPngBlob(svgElement, size, transparentBackground);
+export function canSharePngFiles(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  if (typeof navigator.share !== 'function' || typeof navigator.canShare !== 'function') {
+    return false;
+  }
+  if (typeof File === 'undefined') return false;
+  try {
+    const probe = new File([new Uint8Array([137, 80, 78, 71])], 'probe.png', {
+      type: 'image/png',
+    });
+    return navigator.canShare({ files: [probe] });
+  } catch {
+    return false;
+  }
+}
 
-  const canAttemptClipboardWrite =
+export async function tryDirectClipboardPng(blobOrPromise: Blob | Promise<Blob>): Promise<boolean> {
+  const supportsPngClipboard =
+    typeof navigator !== 'undefined' &&
     typeof navigator.clipboard?.write === 'function' &&
     typeof ClipboardItem !== 'undefined' &&
     (typeof (ClipboardItem as unknown as { supports?: (type: string) => boolean }).supports !==
       'function' ||
       (ClipboardItem as unknown as { supports: (type: string) => boolean }).supports('image/png'));
 
-  if (canAttemptClipboardWrite) {
-    // 1. Synchronous Promise<Blob> write — keeps transient user activation alive on Android Chrome / iOS Safari
-    try {
-      const asyncItem = new ClipboardItem({ 'image/png': pngPromise });
-      await navigator.clipboard.write([asyncItem]);
-      return 'copied';
-    } catch (firstErr) {
-      // 2. Fallback for older mobile Chromium versions that only accept a resolved Blob in ClipboardItem
-      const isTypeError = firstErr instanceof TypeError;
-      if (isTypeError) {
-        try {
-          const blob = await pngPromise;
-          await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-          return 'copied';
-        } catch {
-          // Continue to Android Web Share / download fallback
-        }
-      }
-    }
+  if (!supportsPngClipboard) {
+    return false;
   }
 
-  const blob = await pngPromise;
+  // Call navigator.clipboard.write synchronously inside the active user gesture
+  try {
+    const item = new ClipboardItem({ 'image/png': blobOrPromise });
+    await navigator.clipboard.write([item]);
+    return true;
+  } catch {
+    // If a Promise<Blob> failed (common on older mobile Chromium), retry once with the resolved Blob
+    if (blobOrPromise instanceof Promise) {
+      try {
+        const resolved = await blobOrPromise;
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': resolved })]);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+}
+
+export async function tryNativeSharePng(
+  blob: Blob,
+  filename: string,
+): Promise<'shared' | 'cancelled' | 'unsupported'> {
+  if (
+    typeof navigator === 'undefined' ||
+    typeof navigator.share !== 'function' ||
+    typeof File === 'undefined'
+  ) {
+    return 'unsupported';
+  }
+
+  const file = new File([blob], filename, { type: 'image/png' });
+  if (typeof navigator.canShare === 'function' && !navigator.canShare({ files: [file] })) {
+    return 'unsupported';
+  }
+
+  try {
+    // Keep payload strictly to { files } so Android target apps (WhatsApp, Slack, Gboard Copy) never reject mixed intents
+    await navigator.share({ files: [file] });
+    return 'shared';
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      return 'cancelled';
+    }
+    return 'unsupported';
+  }
+}
+
+/**
+ * Copies the rendered PNG with dedicated Android & desktop strategies:
+ * - On Android: web ClipboardItem('image/png') is widely dropped or unpasteable across Gboard,
+ *   Samsung Keyboard, WhatsApp, and Slack. When a pre-rendered Blob is ready, we synchronously
+ *   open Android's native Share/Copy sheet (which includes Android's native Copy button that writes
+ *   a genuine content:// image URI to the system clipboard). If native share isn't available
+ *   (Firefox Android, WebView, iframe), we return a rendered image modal for native long-press Copy.
+ * - On Desktop: writes synchronously to navigator.clipboard with the pre-rendered Blob (or Promise<Blob>),
+ *   falling back to the Copy Image modal only if clipboard access is blocked (e.g. iframe policy).
+ */
+export async function copyKodeePngToClipboard(
+  svgElement: SVGSVGElement,
+  size: ExportSize,
+  transparentBackground: boolean,
+  cachedBlob?: Blob | null,
+): Promise<CopyImageOutcome> {
   const filename = `kodee-studio-${formatTimestamp()}.png`;
 
-  // 3. Native Android / mobile Share Sheet fallback (allows copying/sending PNG directly)
-  if (typeof navigator.share === 'function' && typeof File !== 'undefined') {
-    const file = new File([blob], filename, { type: 'image/png' });
-    const canShareFile =
-      typeof navigator.canShare === 'function' ? navigator.canShare({ files: [file] }) : false;
-
-    if (canShareFile) {
-      try {
-        await navigator.share({
-          files: [file],
-          title: 'Kodee Studio',
-        });
-        return 'shared';
-      } catch (shareErr) {
-        if (shareErr instanceof DOMException && shareErr.name === 'AbortError') {
-          return 'cancelled';
-        }
-        // If share failed for another reason, fall back to direct download
-      }
+  if (isAndroidDevice()) {
+    // If we already pre-rendered the PNG blob in memory, invoke native Android Share/Copy synchronously inside the tap
+    if (cachedBlob) {
+      const shareResult = await tryNativeSharePng(cachedBlob, filename);
+      if (shareResult === 'shared') return { status: 'shared' };
+      if (shareResult === 'cancelled') return { status: 'cancelled' };
+      return { status: 'modal', blob: cachedBlob, filename };
     }
+
+    // If user tapped before background pre-render finished, render now and attempt share or show native long-press modal
+    const blob = await renderSvgToPngBlob(svgElement, size, transparentBackground);
+    const shareResult = await tryNativeSharePng(blob, filename);
+    if (shareResult === 'shared') return { status: 'shared' };
+    if (shareResult === 'cancelled') return { status: 'cancelled' };
+    return { status: 'modal', blob, filename };
   }
 
-  // 4. Guaranteed fallback: download the PNG file directly
-  triggerBlobDownload(blob, filename);
-  return 'downloaded';
+  // Desktop / iOS Safari path: preserve transient user activation synchronously
+  const blobOrPromise = cachedBlob ?? renderSvgToPngBlob(svgElement, size, transparentBackground);
+  const copied = await tryDirectClipboardPng(blobOrPromise);
+  if (copied) {
+    return { status: 'copied' };
+  }
+
+  const resolvedBlob = await blobOrPromise;
+  return { status: 'modal', blob: resolvedBlob, filename };
 }
 
 export function downloadKodeeSvg(

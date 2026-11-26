@@ -12,6 +12,8 @@ export interface LimbCurve {
   ctrl2?: Point;
   /** Extremity point (hand / foot) in 500x500 canvas coordinates */
   end: Point;
+  /** When true on arms, renders the arm in front of Kodee's body and face */
+  inFront?: boolean;
 }
 
 export type LimbId = 'leftArm' | 'rightArm' | 'leftLeg' | 'rightLeg';
@@ -231,6 +233,7 @@ function isValidLimb(value: unknown): value is LimbCurve {
   if (!isValidPoint(l.ctrl) || !isValidPoint(l.end)) return false;
   if (l.ctrl2 !== undefined && !isValidPoint(l.ctrl2)) return false;
   if (l.anchor !== undefined && !isValidPoint(l.anchor)) return false;
+  if (l.inFront !== undefined && typeof l.inFront !== 'boolean') return false;
   return true;
 }
 
@@ -354,6 +357,7 @@ export function validateKodeeState(
     };
     if (l.ctrl2) out.ctrl2 = clampPt(l.ctrl2);
     if (l.anchor) out.anchor = clampAnchorPt(l.anchor);
+    if (l.inFront) out.inFront = true;
     return out;
   };
 
