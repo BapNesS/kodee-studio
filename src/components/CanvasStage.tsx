@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Check, Copy, Crosshair, Dices, Redo2, RotateCcw, Undo2 } from 'lucide-react';
 import type { KodeeState } from '../types/kodee';
+import type { CopyImageResult } from '../utils/exportPng';
 import { KodeeSvg } from './KodeeSvg';
 
 interface CanvasStageProps {
@@ -14,7 +15,7 @@ interface CanvasStageProps {
   onDragStart: () => void;
   onRandomize: () => void;
   onReset: () => void;
-  onCopyPng: () => Promise<void>;
+  onCopyPng: () => Promise<CopyImageResult>;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
@@ -46,9 +47,11 @@ export const CanvasStage: React.FC<CanvasStageProps> = ({
 
   const handleCopyClick = async () => {
     try {
-      await onCopyPng();
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
+      const outcome = await onCopyPng();
+      if (outcome !== 'cancelled') {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1800);
+      }
     } catch {
       // Handled via toast in parent
     }

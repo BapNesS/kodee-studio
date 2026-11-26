@@ -1,5 +1,7 @@
 import type { ExportSize, KodeeState } from '../types/kodee';
 
+export type CopyImageResult = 'copied' | 'shared' | 'downloaded' | 'cancelled';
+
 function formatTimestamp(date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return [
@@ -10,6 +12,58 @@ function formatTimestamp(date = new Date()): string {
     pad(date.getHours()),
     pad(date.getMinutes()),
   ].join('');
+}
+
+function triggerBlobDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.rel = 'noopener';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+/**
+ * Copies plain text to the clipboard with a mobile/Android-safe execCommand fallback
+ * when navigator.clipboard.writeText is unavailable or blocked (e.g. WebViews, older Android browsers).
+ */
+async function copyTextWithFallback(text: string): Promise<void> {
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall through to legacy textarea selection copy
+    }
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.contentEditable = 'true';
+  textarea.style.position = 'fixed';
+  textarea.style.top = '0';
+  textarea.style.left = '-9999px';
+  textarea.style.opacity = '0';
+  textarea.style.fontSize = '16px'; // Prevents mobile auto-zoom on focus
+  document.body.appendChild(textarea);
+
+  const activeEl = document.activeElement as HTMLElement | null;
+  try {
+    textarea.focus({ preventScroll: true });
+    textarea.select();
+    textarea.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    if (!ok) {
+      throw new Error('Clipboard copy was rejected by this browser.');
+    }
+  } finally {
+    document.body.removeChild(textarea);
+    activeEl?.focus?.({ preventScroll: true });
+  }
 }
 
 /**
@@ -104,49 +158,98 @@ export async function downloadKodeePng(
   transparentBackground: boolean,
 ): Promise<string> {
   const blob = await renderSvgToPngBlob(svgElement, size, transparentBackground);
-  const filename = `kodee-pose-${formatTimestamp()}.png`;
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const filename = `kodee-studio-${formatTimestamp()}.png`;
+  triggerBlobDownload(blob, filename);
   return filename;
 }
 
+/**
+ * Copies the rendered PNG to the clipboard with full Android / mobile compatibility:
+ * 1. Invokes navigator.clipboard.write synchronously with a Promise<Blob> inside ClipboardItem
+ *    to preserve transient user activation on Android Chrome & Safari.
+ * 2. Retries with a resolved Blob for older Chromium engines that reject Promise items.
+ * 3. Falls back to the native Android Web Share sheet (navigator.share with PNG file)
+ *    when direct binary image clipboard writes are unsupported or blocked.
+ * 4. As a last resort, downloads the PNG file directly so the user always gets the image.
+ */
 export async function copyKodeePngToClipboard(
   svgElement: SVGSVGElement,
   size: ExportSize,
   transparentBackground: boolean,
-): Promise<void> {
-  if (!navigator.clipboard || typeof ClipboardItem === 'undefined') {
-    throw new Error('Copying images to the clipboard is not supported in this browser.');
+): Promise<CopyImageResult> {
+  // Start rendering immediately while still inside the synchronous user gesture
+  const pngPromise = renderSvgToPngBlob(svgElement, size, transparentBackground);
+
+  const canAttemptClipboardWrite =
+    typeof navigator.clipboard?.write === 'function' &&
+    typeof ClipboardItem !== 'undefined' &&
+    (typeof (ClipboardItem as unknown as { supports?: (type: string) => boolean }).supports !==
+      'function' ||
+      (ClipboardItem as unknown as { supports: (type: string) => boolean }).supports('image/png'));
+
+  if (canAttemptClipboardWrite) {
+    // 1. Synchronous Promise<Blob> write — keeps transient user activation alive on Android Chrome / iOS Safari
+    try {
+      const asyncItem = new ClipboardItem({ 'image/png': pngPromise });
+      await navigator.clipboard.write([asyncItem]);
+      return 'copied';
+    } catch (firstErr) {
+      // 2. Fallback for older mobile Chromium versions that only accept a resolved Blob in ClipboardItem
+      const isTypeError = firstErr instanceof TypeError;
+      if (isTypeError) {
+        try {
+          const blob = await pngPromise;
+          await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+          return 'copied';
+        } catch {
+          // Continue to Android Web Share / download fallback
+        }
+      }
+    }
   }
-  const blob = await renderSvgToPngBlob(svgElement, size, transparentBackground);
-  await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+
+  const blob = await pngPromise;
+  const filename = `kodee-studio-${formatTimestamp()}.png`;
+
+  // 3. Native Android / mobile Share Sheet fallback (allows copying/sending PNG directly)
+  if (typeof navigator.share === 'function' && typeof File !== 'undefined') {
+    const file = new File([blob], filename, { type: 'image/png' });
+    const canShareFile =
+      typeof navigator.canShare === 'function' ? navigator.canShare({ files: [file] }) : false;
+
+    if (canShareFile) {
+      try {
+        await navigator.share({
+          files: [file],
+          title: 'Kodee Studio',
+        });
+        return 'shared';
+      } catch (shareErr) {
+        if (shareErr instanceof DOMException && shareErr.name === 'AbortError') {
+          return 'cancelled';
+        }
+        // If share failed for another reason, fall back to direct download
+      }
+    }
+  }
+
+  // 4. Guaranteed fallback: download the PNG file directly
+  triggerBlobDownload(blob, filename);
+  return 'downloaded';
 }
 
 export function downloadKodeeSvg(
   svgElement: SVGSVGElement,
   transparentBackground: boolean,
 ): string {
-  const filename = `kodee-pose-${formatTimestamp()}.svg`;
+  const filename = `kodee-studio-${formatTimestamp()}.svg`;
   const svgMarkup = `<?xml version="1.0" encoding="UTF-8"?>\n${serializeCleanSvg(
     svgElement,
     transparentBackground,
     500,
   )}`;
   const blob = new Blob([svgMarkup], { type: 'image/svg+xml;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  triggerBlobDownload(blob, filename);
   return filename;
 }
 
@@ -155,25 +258,18 @@ export async function copyKodeeSvgToClipboard(
   transparentBackground: boolean,
 ): Promise<void> {
   const svgMarkup = serializeCleanSvg(svgElement, transparentBackground, 500);
-  await navigator.clipboard.writeText(svgMarkup);
+  await copyTextWithFallback(svgMarkup);
 }
 
 export function downloadKodeeJson(state: KodeeState): string {
-  const filename = `kodee-pose-${formatTimestamp()}.json`;
+  const filename = `kodee-studio-${formatTimestamp()}.json`;
   const json = JSON.stringify(state, null, 2);
   const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  triggerBlobDownload(blob, filename);
   return filename;
 }
 
 export async function copyKodeeJsonToClipboard(state: KodeeState): Promise<void> {
   const json = JSON.stringify(state, null, 2);
-  await navigator.clipboard.writeText(json);
+  await copyTextWithFallback(json);
 }

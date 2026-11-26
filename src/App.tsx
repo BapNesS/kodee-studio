@@ -16,6 +16,7 @@ import {
   downloadKodeeJson,
   downloadKodeePng,
   downloadKodeeSvg,
+  type CopyImageResult,
 } from './utils/exportPng';
 
 interface ToastMessage {
@@ -234,11 +235,25 @@ export default function App() {
     }
   }, [effectiveTransparent, exportSize, showToast]);
 
-  const handleCopyPng = useCallback(async () => {
-    if (!svgRef.current) return;
+  const handleCopyPng = useCallback(async (): Promise<CopyImageResult> => {
+    if (!svgRef.current) return 'cancelled';
     try {
-      await copyKodeePngToClipboard(svgRef.current, exportSize, effectiveTransparent);
-      showToast('success', `PNG ${exportSize} × ${exportSize} px copied to clipboard.`);
+      const outcome = await copyKodeePngToClipboard(
+        svgRef.current,
+        exportSize,
+        effectiveTransparent,
+      );
+      if (outcome === 'copied') {
+        showToast('success', `PNG ${exportSize} × ${exportSize} px copied to clipboard.`);
+      } else if (outcome === 'shared') {
+        showToast('success', 'PNG shared successfully.');
+      } else if (outcome === 'downloaded') {
+        showToast(
+          'success',
+          'Direct image copy is not supported on this browser — PNG downloaded instead.',
+        );
+      }
+      return outcome;
     } catch (err) {
       showToast(
         'error',

@@ -53,6 +53,7 @@ import {
   LOCAL_ANCHORS,
   translateRig,
 } from '../utils/geometry';
+import type { CopyImageResult } from '../utils/exportPng';
 import { MiniFacePreview, MiniPosePreview } from './MiniPosePreview';
 
 export type SidebarTabId = 'poses' | 'face' | 'accessories' | 'style' | 'bubble' | 'export';
@@ -71,7 +72,7 @@ interface SidebarProps {
   exportTransparent: boolean;
   onExportTransparentChange: (transparent: boolean) => void;
   onDownloadPng: () => Promise<void>;
-  onCopyPng: () => Promise<void>;
+  onCopyPng: () => Promise<CopyImageResult>;
   onDownloadSvg: () => void;
   onCopySvg: () => Promise<void>;
   onDownloadJson: () => void;
@@ -1728,9 +1729,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   type="button"
                   onClick={async () => {
                     try {
-                      await onCopyPng();
-                      setCopiedPng(true);
-                      setTimeout(() => setCopiedPng(false), 1800);
+                      const outcome = await onCopyPng();
+                      if (outcome !== 'cancelled') {
+                        setCopiedPng(true);
+                        setTimeout(() => setCopiedPng(false), 1800);
+                      }
                     } catch {
                       // Error surfaced via toast
                     }
