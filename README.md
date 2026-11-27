@@ -1,10 +1,16 @@
 # Kodee Studio
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-7F52FF.svg)](./LICENSE)
-[![Live Demo](https://img.shields.io/badge/Demo-GitHub%20Pages-E44857.svg)](https://bapness.github.io/kodee-studio/)
+[![Live Demo](https://img.shields.io/badge/Try%20it%20Live-GitHub%20Pages-E44857.svg)](https://bapness.github.io/kodee-studio/)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Support-FFDD00.svg?logo=buy-me-a-coffee&logoColor=000)](https://buymeacoffee.com/bapness)
 
+> **Try it live now:** **[https://bapness.github.io/kodee-studio/](https://bapness.github.io/kodee-studio/)**
+>
+> *Note: Kodee Studio is an experimental project built with **Google AI Studio**.*
+
 A **100% client-side interactive vector studio** for posing the Kotlin mascot **Kodee**, customizing expressions, colors, props, and speech bubbles, and exporting crisp **HD PNG**, **SVG**, or reusable **JSON** scenes — right in your browser with zero backend dependencies.
+
+[![Kodee Studio screenshot](./public/assets/aistudio/Kodee-Studio_29ad3033.png)](https://bapness.github.io/kodee-studio/)
 
 ---
 
